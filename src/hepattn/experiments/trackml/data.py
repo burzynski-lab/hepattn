@@ -31,8 +31,19 @@ class TrackMLDataset(Dataset):
         hit_eval_path: str | None = None,
         hit_filter_threshold: float = 0.1,
         dummy_data: bool = False,
+        particle_hit_fields: list | None = None,
+        merge_quirk_pair: bool = False,
     ):
         super().__init__()
+
+        # Quirk extensions (burzynski-lab fork), both config-steerable:
+        # particle_hit_fields: hits columns to expand into per-(particle, hit)
+        #   target matrices "particle_hit_<field>" for ObjectHitRegressionTask
+        #   (e.g. the trajectory phase / arc-length labels).
+        # merge_quirk_pair: treat the quirk pair as ONE object - merge the two
+        #   is_quirk particles (summed momenta, union of hits).
+        self.particle_hit_fields = particle_hit_fields or []
+        self.merge_quirk_pair = merge_quirk_pair
 
         # Store dummy_data flag
         self.dummy_data = dummy_data
@@ -130,7 +141,9 @@ class TrackMLDataset(Dataset):
             targets[f"{feature}_valid"] = inputs[f"{feature}_valid"]
 
             for field in fields:
-                inputs[f"{feature}_{field}"] = torch.from_numpy(feature_hits[field].values).unsqueeze(0).half()
+                # float32, not half: fp16 inputs break CPU inference (autocast
+                # cannot prioritize Half on CPU) and save nothing at our event sizes
+                inputs[f"{feature}_{field}"] = torch.from_numpy(feature_hits[field].values).unsqueeze(0).float()
 
         # Create the targets for whether a particle slot is used or not
         if num_particles > self.event_max_num_particles:
@@ -156,10 +169,23 @@ class TrackMLDataset(Dataset):
 
         # Create the hit filter targets (note this ignores the event_max_num_particles filtering)
         for target_feature, fields in self.targets.items():
-            if "on_valid_particle" in fields:
-                targets[f"{target_feature}_on_valid_particle"] = torch.from_numpy(hits["on_valid_particle"].to_numpy()).unsqueeze(0)
-            if "is_first" in fields:
-                targets[f"{target_feature}_is_first"] = torch.from_numpy(hits["is_first"].to_numpy()).unsqueeze(0)
+            if target_feature == "particle":
+                continue  # particle regression targets are built below
+            for field in fields:
+                if field in ("on_valid_particle", "is_first"):
+                    targets[f"{target_feature}_{field}"] = torch.from_numpy(hits[field].to_numpy()).unsqueeze(0)
+                else:
+                    # generic hit-level target column (e.g. x/y/z for the
+                    # coplanarity loss, phase/s_arc for per-hit regression)
+                    targets[f"{target_feature}_{field}"] = torch.from_numpy(
+                        hits[field].to_numpy()).unsqueeze(0).float()
+
+        # Per-(particle, hit) regression target matrices, masked by
+        # particle_hit_valid in the loss so off-particle entries are inert
+        for field in self.particle_hit_fields:
+            vals = torch.from_numpy(hits[field].to_numpy()).float()  # (M,)
+            targets[f"particle_hit_{field}"] = (
+                targets["particle_hit_valid"].float() * vals.unsqueeze(0).unsqueeze(0))
 
         # Add sample ID
         targets["sample_id"] = torch.tensor([self.sample_ids[idx]], dtype=torch.int32)
@@ -180,6 +206,19 @@ class TrackMLDataset(Dataset):
 
         particles = pd.read_parquet(self.dirpath / Path(event_name + "-parts.parquet"))
         hits = pd.read_parquet(self.dirpath / Path(event_name + "-hits.parquet"))
+
+        # Optionally merge the quirk pair into a single object: one target
+        # with summed momenta and the union of both quirks' hits (plane, f/m
+        # and vertex are shared by construction, so the first row's stand)
+        if self.merge_quirk_pair and "is_quirk" in particles.columns:
+            q = particles[particles["is_quirk"].astype(bool)]
+            if len(q) >= 2:
+                keep_id = q["particle_id"].iloc[0]
+                for c in ("px", "py", "pz"):
+                    particles.loc[particles["particle_id"] == keep_id, c] = q[c].sum()
+                drop_ids = q["particle_id"].iloc[1:].to_numpy()
+                hits.loc[hits["particle_id"].isin(drop_ids), "particle_id"] = keep_id
+                particles = particles[~particles["particle_id"].isin(drop_ids)]
 
         # Make the detector volume selection
         if self.hit_volume_ids:
