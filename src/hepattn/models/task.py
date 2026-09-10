@@ -937,9 +937,12 @@ class GaussianRegressionTask(Task):
         jac = torch.sum(torch.diagonal(outputs[self.output_object + "_u"], offset=0, dim1=-2, dim2=-1), dim=-1)
         log_likelihood = self.likelihood_norm - 0.5 * zsq + jac
 
-        # Only compute NLL for valid tracks or track-hit pairs
-        # nll = nll[targets[self.target_object + "_valid"]]
-        log_likelihood *= targets[self.target_object + "_valid"].type_as(log_likelihood)
+        # Only compute NLL for valid tracks or track-hit pairs. Must index,
+        # not multiply by the mask: null-slot targets are deliberately NaN
+        # and NaN * 0 = NaN would poison the total loss.
+        log_likelihood = log_likelihood[targets[self.target_object + "_valid"].bool()]
+        if log_likelihood.numel() == 0:
+            return {"nll": outputs[self.output_object + "_mu"].sum() * 0.0}
         # Take the average and apply the task weight
         return {"nll": -self.loss_weight * log_likelihood.mean()}
 
