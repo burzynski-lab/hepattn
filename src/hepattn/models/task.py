@@ -897,7 +897,7 @@ class GaussianRegressionTask(Task):
 
         ubar = u.clone()
         # Make sure the diagonal entries are positive (as variance is always positive)
-        ubar[..., torch.arange(k), torch.arange(k)] = torch.exp(u[..., torch.arange(k), torch.arange(k)])
+        ubar[..., torch.arange(k), torch.arange(k)] = torch.exp(u[..., torch.arange(k), torch.arange(k)]).to(ubar.dtype)
 
         return {self.output_object + "_mu": mu, self.output_object + "_u": u, self.output_object + "_ubar": ubar}
 
