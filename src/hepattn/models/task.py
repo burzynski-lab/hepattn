@@ -901,7 +901,7 @@ class GaussianRegressionTask(Task):
 
         return {self.output_object + "_mu": mu, self.output_object + "_u": u, self.output_object + "_ubar": ubar}
 
-    def predict(self, outputs: dict[str, Tensor]) -> dict[str, Tensor]:
+    def predict(self, outputs: dict[str, Tensor], query_mask: Tensor | None = None) -> dict[str, Tensor]:  # noqa: ARG002
         preds = outputs
         mu = outputs[self.output_object + "_mu"]
         ubar = outputs[self.output_object + "_ubar"]
