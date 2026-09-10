@@ -892,7 +892,7 @@ class GaussianRegressionTask(Task):
         # Mean vector
         mu = latent[..., :k]
         # Upper-diagonal Cholesky decomposition of the precision matrix
-        u = torch.zeros(latent.size()[:-1] + torch.Size((k, k)), device=latent.device)
+        u = torch.zeros(latent.size()[:-1] + torch.Size((k, k)), device=latent.device, dtype=latent.dtype)
         u[..., triu_idx[0, :], triu_idx[1, :]] = latent[..., k:]
 
         ubar = u.clone()
