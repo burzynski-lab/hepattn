@@ -62,6 +62,11 @@ def _close_pools() -> None:
 
 
 def solve_scipy(cost):
+    # Sanitize non-finite entries (bf16 overflow of an extreme early logit
+    # can inject inf/nan); a huge finite cost keeps the assignment feasible
+    # while making such pairings maximally unattractive.
+    if not np.isfinite(cost).all():
+        cost = np.nan_to_num(cost, nan=1e12, posinf=1e12, neginf=-1e12)
     _, col_idx = scipy.optimize.linear_sum_assignment(cost)
     return col_idx
 
