@@ -928,19 +928,23 @@ class GaussianRegressionTask(Task):
         targets: dict[str, Tensor],
         layer_outputs: dict[str, dict[str, Tensor]] | None = None,
     ) -> dict[str, Tensor]:
-        y = torch.stack([targets[self.target_object + "_" + field] for field in self.fields], dim=-1)
+        # Mask BEFORE any arithmetic: null-slot targets are deliberately NaN,
+        # and computing on the full tensor poisons the BACKWARD pass even if
+        # the final result is indexed (0-gradient x saved-NaN operand = NaN
+        # weight gradients through the einsum backward).
+        valid = targets[self.target_object + "_valid"].bool()
+        y = torch.stack([targets[self.target_object + "_" + field] for field in self.fields], dim=-1)[valid]
+        mu = outputs[self.output_object + "_mu"][valid]
+        ubar = outputs[self.output_object + "_ubar"][valid]
+        u = outputs[self.output_object + "_u"][valid]
 
         # Compute the standardised score vector between the targets and the predicted distribution paramaters
-        z = torch.einsum("...ij,...j->...i", outputs[self.output_object + "_ubar"], y - outputs[self.output_object + "_mu"])
+        z = torch.einsum("...ij,...j->...i", ubar, y - mu)
         # Compute the NLL from the score vector
         zsq = torch.einsum("...i,...i->...", z, z)
-        jac = torch.sum(torch.diagonal(outputs[self.output_object + "_u"], offset=0, dim1=-2, dim2=-1), dim=-1)
+        jac = torch.sum(torch.diagonal(u, offset=0, dim1=-2, dim2=-1), dim=-1)
         log_likelihood = self.likelihood_norm - 0.5 * zsq + jac
 
-        # Only compute NLL for valid tracks or track-hit pairs. Must index,
-        # not multiply by the mask: null-slot targets are deliberately NaN
-        # and NaN * 0 = NaN would poison the total loss.
-        log_likelihood = log_likelihood[targets[self.target_object + "_valid"].bool()]
         if log_likelihood.numel() == 0:
             return {"nll": outputs[self.output_object + "_mu"].sum() * 0.0}
         # Take the average and apply the task weight
